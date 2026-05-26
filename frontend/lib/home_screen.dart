@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'package:flutter/material';
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'cart_provider.dart';
@@ -148,7 +148,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 Expanded(
                   child: DropdownButtonFormField<int>(
                     decoration: const InputDecoration(labelText: "Patient"),
-                    value: selectedPatientId,
+                    initialValue: selectedPatientId,
                     items: const [
                       DropdownMenuItem(value: 1, child: Text("John Doe")),
                       DropdownMenuItem(value: 2, child: Text("Jane Doe")),
@@ -168,7 +168,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     data: (services) {
                       return DropdownButtonFormField<Map<String, dynamic>>(
                         decoration: const InputDecoration(labelText: "Service"),
-                        value: selectedService,
+                        initialValue: selectedService,
                         items: services.map((s) {
                           return DropdownMenuItem(
                             value: s,

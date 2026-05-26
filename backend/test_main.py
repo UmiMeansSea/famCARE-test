@@ -1,27 +1,41 @@
 import os
+import sys
+import asyncio
+
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 import pytest
+import pytest_asyncio
 from datetime import datetime, timezone
 from httpx import AsyncClient, ASGITransport
 import main
 
 pytestmark = pytest.mark.asyncio(loop_scope="function")
 
-@pytest.fixture(autouse=True, scope="session")
+@pytest_asyncio.fixture(autouse=True, scope="function")
 async def init_pool():
     """
-    Initializes the database connection pool once per test session.
+    Initializes a new database connection pool for each test function
+    to ensure it runs on the active event loop.
     """
-    if main.db_pool is None:
-        main.db_pool = await main.asyncpg.create_pool(main.DB_URL)
+    from psycopg_pool import AsyncConnectionPool
+    from psycopg.rows import dict_row
+    
+    old_pool = main.db_pool
+    main.db_pool = AsyncConnectionPool(conninfo=main.DB_URL, kwargs={"row_factory": dict_row}, open=False)
+    await main.db_pool.open()
     yield
     await main.db_pool.close()
+    main.db_pool = old_pool
 
-@pytest.fixture(autouse=True, scope="function")
+@pytest_asyncio.fixture(autouse=True, scope="function")
 async def setup_test_db(init_pool):
     """
     Clears the database tables and populates base seed data before each test.
     """
-    async with main.db_pool.acquire() as conn:
+    print(f"\n--- setup_test_db loop ID: {id(asyncio.get_running_loop())} ---")
+    async with main.db_pool.connection() as conn:
         # Clear tables
         await conn.execute("TRUNCATE bookings, caregivers, patients, services RESTART IDENTITY CASCADE;")
         

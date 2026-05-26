@@ -4,7 +4,8 @@ from typing import List
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import asyncpg
+from psycopg_pool import AsyncConnectionPool
+from psycopg.rows import dict_row
 
 # Load .env file manually if exists
 if os.path.exists(".env"):
@@ -18,7 +19,7 @@ if os.path.exists(".env"):
 # Database Connection Pool
 raw_db_url = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/famcare")
 DB_URL = raw_db_url.replace("postgresql+asyncpg://", "postgresql://")
-db_pool = None
+db_pool = AsyncConnectionPool(conninfo=DB_URL, kwargs={"row_factory": dict_row}, open=False)
 
 # Initialize FastAPI App
 app = FastAPI(title="FamCare Bulk Scheduler API")
@@ -34,14 +35,11 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup():
-    global db_pool
-    if db_pool is None:
-        db_pool = await asyncpg.create_pool(DB_URL)
+    await db_pool.open()
 
 @app.on_event("shutdown")
 async def shutdown():
-    if db_pool:
-        await db_pool.close()
+    await db_pool.close()
 
 # Pydantic Schemas
 class ServiceSchema(BaseModel):
@@ -69,8 +67,9 @@ class CheckoutRequest(BaseModel):
 # Endpoints
 @app.get("/services", response_model=List[ServiceSchema])
 async def get_services():
-    async with db_pool.acquire() as conn:
-        rows = await conn.fetch("SELECT id, name, duration_minutes, price FROM services ORDER BY id")
+    async with db_pool.connection() as conn:
+        cur = await conn.execute("SELECT id, name, duration_minutes, price FROM services ORDER BY id")
+        rows = await cur.fetchall()
         return [
             ServiceSchema(
                 id=r["id"],
@@ -91,15 +90,17 @@ async def get_available_slots(service_id: int, date: str):
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
 
-    async with db_pool.acquire() as conn:
+    async with db_pool.connection() as conn:
         # Get service duration
-        service = await conn.fetchrow("SELECT duration_minutes FROM services WHERE id = $1", service_id)
+        cur = await conn.execute("SELECT duration_minutes FROM services WHERE id = %s", (service_id,))
+        service = await cur.fetchone()
         if not service:
             raise HTTPException(status_code=404, detail="Service not found")
         duration = service["duration_minutes"]
 
         # Get all caregivers
-        caregivers = await conn.fetch("SELECT id, name FROM caregivers ORDER BY id")
+        cur = await conn.execute("SELECT id, name FROM caregivers ORDER BY id")
+        caregivers = await cur.fetchall()
         if not caregivers:
             return []
 
@@ -107,10 +108,11 @@ async def get_available_slots(service_id: int, date: str):
         day_start = datetime.combine(query_date, time.min).replace(tzinfo=timezone.utc)
         day_end = datetime.combine(query_date, time.max).replace(tzinfo=timezone.utc)
 
-        bookings = await conn.fetch(
-            "SELECT caregiver_id, start_time, end_time FROM bookings WHERE start_time >= $1 AND start_time <= $2",
-            day_start, day_end
+        cur = await conn.execute(
+            "SELECT caregiver_id, start_time, end_time FROM bookings WHERE start_time >= %s AND start_time <= %s",
+            (day_start, day_end)
         )
+        bookings = await cur.fetchall()
 
         # Standard business hours: 08:00 to 18:00
         start_hour = 8
@@ -162,23 +164,24 @@ async def checkout(payload: CheckoutRequest):
     if not payload.items:
         raise HTTPException(status_code=400, detail="Cart is empty")
 
-    async with db_pool.acquire() as conn:
+    async with db_pool.connection() as conn:
         # Start Transaction block
         async with conn.transaction():
             # 1. Lock caregivers to avoid race conditions. Must order IDs to prevent deadlocks.
             caregiver_ids = sorted(list(set(item.caregiver_id for item in payload.items)))
             await conn.execute(
-                "SELECT id FROM caregivers WHERE id = ANY($1) ORDER BY id FOR UPDATE",
-                caregiver_ids
+                "SELECT id FROM caregivers WHERE id = ANY(%s) ORDER BY id FOR UPDATE",
+                (caregiver_ids,)
             )
 
             # 2. Iterate and validate each booking slot
             for idx, item in enumerate(payload.items):
                 # Retrieve service duration
-                service = await conn.fetchrow(
-                    "SELECT name, duration_minutes FROM services WHERE id = $1",
-                    item.service_id
+                cur = await conn.execute(
+                    "SELECT name, duration_minutes FROM services WHERE id = %s",
+                    (item.service_id,)
                 )
+                service = await cur.fetchone()
                 if not service:
                     raise HTTPException(
                         status_code=400,
@@ -201,17 +204,18 @@ async def checkout(payload: CheckoutRequest):
                 end_dt = start_dt + timedelta(minutes=duration)
 
                 # Check caregiver conflict
-                cg_conflict = await conn.fetchrow(
+                cur = await conn.execute(
                     """
                     SELECT b.id, c.name AS caregiver_name, b.start_time, b.end_time 
                     FROM bookings b 
                     JOIN caregivers c ON b.caregiver_id = c.id
-                    WHERE b.caregiver_id = $1 
-                      AND b.start_time < $2 
-                      AND b.end_time > $3
+                    WHERE b.caregiver_id = %s 
+                      AND b.start_time < %s 
+                      AND b.end_time > %s
                     """,
-                    item.caregiver_id, end_dt, start_dt
+                    (item.caregiver_id, end_dt, start_dt)
                 )
+                cg_conflict = await cur.fetchone()
 
                 if cg_conflict:
                     raise HTTPException(
@@ -225,17 +229,18 @@ async def checkout(payload: CheckoutRequest):
                     )
 
                 # Check patient conflict (Patient cannot have two services overlapping)
-                patient_conflict = await conn.fetchrow(
+                cur = await conn.execute(
                     """
                     SELECT b.id, p.name AS patient_name, b.start_time, b.end_time 
                     FROM bookings b 
                     JOIN patients p ON b.patient_id = p.id
-                    WHERE b.patient_id = $1 
-                      AND b.start_time < $2 
-                      AND b.end_time > $3
+                    WHERE b.patient_id = %s 
+                      AND b.start_time < %s 
+                      AND b.end_time > %s
                     """,
-                    item.patient_id, end_dt, start_dt
+                    (item.patient_id, end_dt, start_dt)
                 )
+                patient_conflict = await cur.fetchone()
 
                 if patient_conflict:
                     raise HTTPException(
@@ -252,9 +257,9 @@ async def checkout(payload: CheckoutRequest):
                 await conn.execute(
                     """
                     INSERT INTO bookings (patient_id, caregiver_id, service_id, start_time, end_time) 
-                    VALUES ($1, $2, $3, $4, $5)
+                    VALUES (%s, %s, %s, %s, %s)
                     """,
-                    item.patient_id, item.caregiver_id, item.service_id, start_dt, end_dt
+                    (item.patient_id, item.caregiver_id, item.service_id, start_dt, end_dt)
                 )
 
     return {"message": "All bookings scheduled successfully"}
