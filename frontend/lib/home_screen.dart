@@ -5,7 +5,7 @@ import 'package:http/http.dart' as http;
 import 'cart_provider.dart';
 
 // Configurable API Base URL
-const String baseUrl = "http://localhost:8000";
+const String baseUrl = "http://192.168.1.3:8000";
 
 // Providers for fetching services and slots
 final servicesProvider = FutureProvider<List<Map<String, dynamic>>>((ref) async {
