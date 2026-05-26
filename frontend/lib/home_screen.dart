@@ -411,23 +411,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                               ),
                             ),
                             child: InkWell(
-                              onTap: isAlreadyInCart
-                                  ? null
-                                  : () {
-                                      if (selectedService != null) {
-                                        cartNotifier.addItem(
-                                          CartItem(
-                                            serviceId: selectedService!['id'],
-                                            serviceName: selectedService!['name'],
-                                            caregiverId: slot['caregiver_id'],
-                                            caregiverName: slot['caregiver_name'],
-                                            date: formattedDate,
-                                            startTime: slot['start_time'],
-                                            price: selectedService!['price'],
-                                          ),
-                                        );
-                                      }
-                                    },
+                              onTap: () {
+                                if (selectedService == null) return;
+                                final cartItem = CartItem(
+                                  serviceId: selectedService!['id'],
+                                  serviceName: selectedService!['name'],
+                                  caregiverId: slot['caregiver_id'],
+                                  caregiverName: slot['caregiver_name'],
+                                  date: formattedDate,
+                                  startTime: slot['start_time'],
+                                  price: selectedService!['price'],
+                                );
+                                if (isAlreadyInCart) {
+                                  cartNotifier.removeItem(cartItem);
+                                } else {
+                                  cartNotifier.addItem(cartItem);
+                                }
+                              },
                               borderRadius: BorderRadius.circular(10.0),
                               child: Padding(
                                 padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 8.0),
