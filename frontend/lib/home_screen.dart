@@ -5,7 +5,7 @@ import 'package:http/http.dart' as http;
 import 'cart_provider.dart';
 
 // Configurable API Base URL
-const String baseUrl = "http://192.168.1.3:8000";
+const String baseUrl = "https://parabola-estranged-saloon.ngrok-free.dev";
 
 // Providers for fetching services, slots, and bookings
 final servicesProvider = FutureProvider<List<Map<String, dynamic>>>((ref) async {
