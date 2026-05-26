@@ -263,3 +263,35 @@ async def checkout(payload: CheckoutRequest):
                 )
 
     return {"message": "All bookings scheduled successfully"}
+
+class BookingHistorySchema(BaseModel):
+    id: int
+    service_name: str
+    caregiver_name: str
+    start_time: datetime
+    end_time: datetime
+
+@app.get("/patients/{patient_id}/bookings", response_model=List[BookingHistorySchema])
+async def get_patient_bookings(patient_id: int):
+    async with db_pool.connection() as conn:
+        cur = await conn.execute(
+            """
+            SELECT b.id, s.name AS service_name, c.name AS caregiver_name, b.start_time, b.end_time 
+            FROM bookings b
+            JOIN services s ON b.service_id = s.id
+            JOIN caregivers c ON b.caregiver_id = c.id
+            WHERE b.patient_id = %s
+            ORDER BY b.start_time DESC
+            """,
+            (patient_id,)
+        )
+        rows = await cur.fetchall()
+        return [
+            BookingHistorySchema(
+                id=r["id"],
+                service_name=r["service_name"],
+                caregiver_name=r["caregiver_name"],
+                start_time=r["start_time"],
+                end_time=r["end_time"]
+            ) for r in rows
+        ]
