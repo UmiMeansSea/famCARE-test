@@ -203,6 +203,12 @@ async def checkout(payload: CheckoutRequest):
 
                 end_dt = start_dt + timedelta(minutes=duration)
 
+                if start_dt < datetime.now(timezone.utc):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Item {idx}: Cannot book a service in the past ({item.start_time})."
+                    )
+
                 # Check caregiver conflict
                 cur = await conn.execute(
                     """
@@ -295,3 +301,22 @@ async def get_patient_bookings(patient_id: int):
                 end_time=r["end_time"]
             ) for r in rows
         ]
+
+class PatientSchema(BaseModel):
+    id: int
+    name: str
+    email: str
+
+@app.get("/patients", response_model=List[PatientSchema])
+async def get_patients():
+    async with db_pool.connection() as conn:
+        cur = await conn.execute("SELECT id, name, email FROM patients ORDER BY id")
+        rows = await cur.fetchall()
+        return [
+            PatientSchema(
+                id=r["id"],
+                name=r["name"],
+                email=r["email"]
+            ) for r in rows
+        ]
+

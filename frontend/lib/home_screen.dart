@@ -18,6 +18,16 @@ final servicesProvider = FutureProvider<List<Map<String, dynamic>>>((ref) async 
   }
 });
 
+final patientsProvider = FutureProvider<List<Map<String, dynamic>>>((ref) async {
+  final response = await http.get(Uri.parse("$baseUrl/patients"));
+  if (response.statusCode == 200) {
+    final List<dynamic> data = json.decode(response.body);
+    return data.map((e) => Map<String, dynamic>.from(e)).toList();
+  } else {
+    throw Exception("Failed to load patients");
+  }
+});
+
 final bookingHistoryProvider = FutureProvider.family<List<Map<String, dynamic>>, int>((ref, patientId) async {
   final response = await http.get(Uri.parse("$baseUrl/patients/$patientId/bookings"));
   if (response.statusCode == 200) {
@@ -43,6 +53,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   bool loadingSlots = false;
   String? checkoutError;
   bool checkoutSuccess = false;
+  bool isCheckingOut = false;
 
   @override
   void initState() {
@@ -102,6 +113,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     setState(() {
       checkoutError = null;
       checkoutSuccess = false;
+      isCheckingOut = true;
     });
 
     final payload = {
@@ -132,6 +144,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       setState(() {
         checkoutError = "Failed to communicate with backend: $e";
       });
+    } finally {
+      setState(() {
+        isCheckingOut = false;
+      });
     }
   }
 
@@ -141,6 +157,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final cart = ref.watch(cartProvider);
     final cartNotifier = ref.read(cartProvider.notifier);
     final historyAsync = ref.watch(bookingHistoryProvider(selectedPatientId));
+    final patientsAsync = ref.watch(patientsProvider);
 
     final formattedDate = "${selectedDate.year}-${selectedDate.month.toString().padLeft(2, '0')}-${selectedDate.day.toString().padLeft(2, '0')}";
 
@@ -188,28 +205,45 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                             ],
                           ),
                           const SizedBox(height: 16),
-                          DropdownButtonFormField<int>(
-                            decoration: InputDecoration(
-                              labelText: "Select Patient",
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(8.0),
-                              ),
-                              contentPadding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
-                            ),
-                            initialValue: selectedPatientId,
-                            items: const [
-                              DropdownMenuItem(value: 1, child: Text("John Doe")),
-                              DropdownMenuItem(value: 2, child: Text("Jane Doe")),
-                            ],
-                            onChanged: (val) {
-                              if (val != null) {
-                                setState(() {
-                                  selectedPatientId = val;
-                                  checkoutError = null;
-                                  checkoutSuccess = false;
+                          patientsAsync.when(
+                            data: (patients) {
+                              // If current selectedPatientId is not in the loaded patients list, reset to the first one.
+                              final hasSelected = patients.any((p) => p['id'] == selectedPatientId);
+                              if (!hasSelected && patients.isNotEmpty) {
+                                WidgetsBinding.instance.addPostFrameCallback((_) {
+                                  setState(() {
+                                    selectedPatientId = patients.first['id'];
+                                  });
                                 });
                               }
+                              return DropdownButtonFormField<int>(
+                                decoration: InputDecoration(
+                                  labelText: "Select Patient",
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(8.0),
+                                  ),
+                                  contentPadding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+                                ),
+                                value: selectedPatientId,
+                                items: patients.map((p) {
+                                  return DropdownMenuItem<int>(
+                                    value: p['id'],
+                                    child: Text(p['name']),
+                                  );
+                                }).toList(),
+                                onChanged: (val) {
+                                  if (val != null) {
+                                    setState(() {
+                                      selectedPatientId = val;
+                                      checkoutError = null;
+                                      checkoutSuccess = false;
+                                    });
+                                  }
+                                },
+                              );
                             },
+                            loading: () => const Center(child: CircularProgressIndicator()),
+                            error: (err, stack) => Text("Error loading patients: $err"),
                           ),
                           const SizedBox(height: 16),
                           servicesAsync.when(
@@ -535,17 +569,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                               width: double.infinity,
                               height: 50,
                               child: FilledButton.icon(
-                                onPressed: handleCheckout,
+                                onPressed: isCheckingOut ? null : handleCheckout,
                                 style: FilledButton.styleFrom(
                                   backgroundColor: Colors.teal[700],
                                   shape: RoundedRectangleBorder(
                                     borderRadius: BorderRadius.circular(10.0),
                                   ),
                                 ),
-                                icon: const Icon(Icons.lock_outline, size: 18),
-                                label: const Text(
-                                  "Atomically Book All",
-                                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                                icon: isCheckingOut
+                                    ? const SizedBox(
+                                        width: 18,
+                                        height: 18,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          color: Colors.white,
+                                        ),
+                                      )
+                                    : const Icon(Icons.lock_outline, size: 18),
+                                label: Text(
+                                  isCheckingOut ? "Processing Transaction..." : "Atomically Book All",
+                                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                                 ),
                               ),
                             ),
@@ -744,7 +787,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              "Atomic Transaction Rolled Back:",
+                              (checkoutError!.contains("Conflict") || checkoutError!.contains("past"))
+                                  ? "Atomic Transaction Rolled Back:"
+                                  : "System Error:",
                               style: TextStyle(color: Colors.red[900], fontWeight: FontWeight.bold, fontSize: 14),
                             ),
                             const SizedBox(height: 4),

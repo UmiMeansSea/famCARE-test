@@ -7,7 +7,9 @@ if sys.platform == "win32":
 
 import pytest
 import pytest_asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+
+future_date = (datetime.now(timezone.utc) + timedelta(days=1)).strftime('%Y-%m-%d')
 from httpx import AsyncClient, ASGITransport
 import main
 
@@ -98,14 +100,14 @@ async def test_successful_bulk_checkout():
                     "patient_id": 1,
                     "service_id": 1,
                     "caregiver_id": 1,
-                    "date": "2026-05-26",
+                    "date": future_date,
                     "start_time": "09:00"
                 },
                 {
                     "patient_id": 1,
                     "service_id": 2,
                     "caregiver_id": 2,
-                    "date": "2026-05-26",
+                    "date": future_date,
                     "start_time": "10:00"
                 }
             ]
@@ -123,7 +125,7 @@ async def test_caregiver_conflict_detection():
                     "patient_id": 1,
                     "service_id": 1,
                     "caregiver_id": 1,
-                    "date": "2026-05-26",
+                    "date": future_date,
                     "start_time": "09:00"
                 }
             ]
@@ -137,7 +139,7 @@ async def test_caregiver_conflict_detection():
                     "patient_id": 2,
                     "service_id": 1,
                     "caregiver_id": 1,
-                    "date": "2026-05-26",
+                    "date": future_date,
                     "start_time": "09:15"
                 }
             ]
@@ -155,7 +157,7 @@ async def test_patient_conflict_detection():
                     "patient_id": 1,
                     "service_id": 1,
                     "caregiver_id": 1,
-                    "date": "2026-05-26",
+                    "date": future_date,
                     "start_time": "09:00"
                 }
             ]
@@ -169,7 +171,7 @@ async def test_patient_conflict_detection():
                     "patient_id": 1,
                     "service_id": 1,
                     "caregiver_id": 2,
-                    "date": "2026-05-26",
+                    "date": future_date,
                     "start_time": "09:15"
                 }
             ]
@@ -187,7 +189,7 @@ async def test_atomic_checkout_failure_rollback():
                     "patient_id": 1,
                     "service_id": 1,
                     "caregiver_id": 1,
-                    "date": "2026-05-26",
+                    "date": future_date,
                     "start_time": "09:00"
                 }
             ]
@@ -201,14 +203,14 @@ async def test_atomic_checkout_failure_rollback():
                     "patient_id": 1,
                     "service_id": 1,
                     "caregiver_id": 2,
-                    "date": "2026-05-26",
+                    "date": future_date,
                     "start_time": "14:00"
                 },
                 {
                     "patient_id": 2,
                     "service_id": 1,
                     "caregiver_id": 1,
-                    "date": "2026-05-26",
+                    "date": future_date,
                     "start_time": "09:15"
                 }
             ]
@@ -222,10 +224,67 @@ async def test_atomic_checkout_failure_rollback():
                     "patient_id": 1,
                     "service_id": 1,
                     "caregiver_id": 2,
-                    "date": "2026-05-26",
+                    "date": future_date,
                     "start_time": "14:00"
                 }
             ]
         }
         res3 = await client.post("/cart/checkout", json=p3)
         assert res3.status_code == 200
+
+async def test_time_travel_booking_prevention():
+    transport = ASGITransport(app=main.app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Create a payload with a past date
+        payload = {
+            "items": [
+                {
+                    "patient_id": 1,
+                    "service_id": 1,
+                    "caregiver_id": 1,
+                    "date": "2020-01-01",
+                    "start_time": "09:00"
+                }
+            ]
+        }
+        res = await client.post("/cart/checkout", json=payload)
+        assert res.status_code == 400
+        assert "Cannot book a service in the past" in res.json()["detail"]
+
+async def test_get_patients():
+    transport = ASGITransport(app=main.app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/patients")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 2
+        assert data[0]["name"] == "John Doe"
+        assert data[1]["name"] == "Jane Doe"
+
+async def test_get_patient_bookings():
+    transport = ASGITransport(app=main.app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Book a service first
+        payload = {
+            "items": [
+                {
+                    "patient_id": 1,
+                    "service_id": 1,
+                    "caregiver_id": 1,
+                    "date": future_date,
+                    "start_time": "09:00"
+                }
+            ]
+        }
+        res = await client.post("/cart/checkout", json=payload)
+        assert res.status_code == 200
+
+        # 2. Get history for patient 1
+        response = await client.get("/patients/1/bookings")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 1
+        assert data[0]["service_name"] == "General Health Checkup"
+        assert data[0]["caregiver_name"] == "Alice Smith"
+
+
